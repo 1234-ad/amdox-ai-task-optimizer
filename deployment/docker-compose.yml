@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: amdox-postgres
+    environment:
+      POSTGRES_USER: amdox
+      POSTGRES_PASSWORD: amdox_password
+      POSTGRES_DB: amdox_task_optimizer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amdox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: amdox-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main Application
+  app:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: amdox-app
+    environment:
+      DATABASE_URL: postgresql://amdox:amdox_password@postgres:5432/amdox_task_optimizer
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: change-this-in-production
+      DEBUG: "False"
+      LOG_LEVEL: INFO
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./models:/app/models
+    restart: unless-stopped
+
+  # Celery Worker (for background tasks)
+  celery:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: amdox-celery
+    command: celery -A app.celery worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://amdox:amdox_password@postgres:5432/amdox_task_optimizer
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+      - app
+    restart: unless-stopped
+
+  # Celery Beat (for scheduled tasks)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: amdox-celery-beat
+    command: celery -A app.celery beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://amdox:amdox_password@postgres:5432/amdox_task_optimizer
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+      - app
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: amdox-network
